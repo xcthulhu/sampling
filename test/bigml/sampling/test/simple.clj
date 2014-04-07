@@ -8,6 +8,49 @@
   (:require (bigml.sampling [simple :as simple]
                             [random :as random])))
 
+(deftest make-alias-vector-sad-paths
+  (is (= [] (#'simple/make-alias-vector [] {})))
+  (is (= [] (#'simple/make-alias-vector [:a] {:a 0})))
+  (is (= [] (#'simple/make-alias-vector [:a] {:a -1})))
+  (is (= [] (#'simple/make-alias-vector [:a] {})))
+  (is (= [] (#'simple/make-alias-vector [:a :b] {})))
+  (is (= [] (#'simple/make-alias-vector [:a :b] {:a 0 :b -1})))
+  (is (= [] (#'simple/make-alias-vector [:a :b :c] {:a 0 :b -1}))))
+
+(defn- unmake-alias-vector
+  [alias-vector]
+  (let [bin-size (/ 1 (count alias-vector))] 
+    (reduce
+     (fn [weigh v]
+       (if-let [lk (:just v)]
+         (update-in weigh [lk] #(+ bin-size (or % 0)))
+         (let [{p :pivot sk :left lk :right} v]
+           (-> weigh
+               (update-in [sk] #(+ (* p bin-size) (or % 0)))
+               (update-in [lk] #(+ (* (- 1 p) bin-size) (or % 0))))))) {} alias-vector)))
+
+(deftest unmake-alias-vector-simple
+  (let [coll [:a :b]
+        weigh {:a 1 :b 1}
+        weigh_ (unmake-alias-vector (#'simple/make-alias-vector coll weigh))]
+    (is (=  (set coll) (set (keys weigh_))))
+    (is (= 1 (apply + (vals weigh_))))
+    (is (= (weigh_ :a) (weigh_ :b)))))
+
+(defn- make-weighted-data [& {:keys [seed]}]
+  (let [rnd (random/create :seed seed)]
+    (map vector (range) (repeatedly #(Math/abs (.nextGaussian rnd))))))
+
+(deftest unmake-alias-vector-random 
+  (let [weigh (into {} (take 50 (make-weighted-data :seed :foo)))
+        coll (keys weigh)
+        total (apply + (vals weigh))
+        weigh_ (unmake-alias-vector (#'simple/make-alias-vector coll weigh))
+        ]
+    (is (= (set coll) (set (keys weigh_))))
+    (is (about-eq 1 (apply + (vals weigh_)) 10e-14))
+    (is (every? #(about-eq (get weigh %) (* total (get weigh_ %)) 10e-14) coll))))
+
 (deftest sample
   (is (about-eq (reduce + (take 500 (simple/sample (range 1000))))
                 250000 25000))
@@ -24,10 +67,6 @@
   (is (= (take 10 (simple/sample (range 20) :seed 7 :replace true))
          '(16 4 5 4 0 14 8 9 10 14))))
 
-(defn- make-weighted-data [& {:keys [seed]}]
-  (let [rnd (random/create :seed seed)]
-    (map list (range) (repeatedly #(Math/abs (.nextGaussian rnd))))))
-
 (deftest weighted-regression
   (let [data (take 10 (make-weighted-data :seed :foo))]
     (is (= (map first (simple/sample data :seed :bar :weigh second))
@@ -36,7 +75,7 @@
                                             :seed :bar
                                             :weigh second
                                             :replace true)))
-           '(9 6 9 4 0 8 4 1 3 0)))))
+           '(9 3 9 1 5 7 1 0 1 5)))))
 
 (deftest twister-regression
   (is (= (take 10 (simple/sample (range 20)
@@ -55,3 +94,4 @@
                              :weigh {:heads 1 :tails 0})
               (take 100)
               (frequencies)))))
+

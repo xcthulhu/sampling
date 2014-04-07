@@ -69,19 +69,52 @@
           (pop-item weigh tree (random/next-double! rnd (:total tree)))]
       (cons item (lazy-seq (weighted-without-replacement new-tree weigh rnd))))))
 
+;; Alias Method
+;; Vose, Michael. (1991) "A Linear Algorithm For Generating Random Numbers with a Given Distribution".  IEEE Transactions on Software Engineering 17 (9): 972-976
+(defn- make-alias-vector [coll weigh]
+  (let [
+        weights (->> coll (map #(vector % (weigh %))) (filter (comp (every-pred (complement nil?) pos?) second)))
+        [total bin-count] (reduce (fn [[total bin-count] [_ v]] [(+ total v) (inc bin-count)]) [0 1] weights)
+        bin-size (/ total bin-count)
+        {initial-small-values true
+         initial-large-values false} (group-by (comp (partial > bin-size) second) weights)
+        ]
+      (loop [alias-vector []
+             [[sk sv] & ss :as small-values] initial-small-values
+             [[lk lv] & ls :as large-values] initial-large-values]
+        (cond
+         (not (empty? small-values))
+         (let [alias-vector_ (conj alias-vector {:pivot (/ sv bin-size) :left sk :right lk})
+               lv_ (- lv (- bin-size sv))]
+           (cond
+            (empty? ls) (vec (concat alias-vector_ (repeat (- bin-count (count alias-vector_)) {:just lk}))) 
+            (< lv_ bin-size) (recur alias-vector_ (conj ss [lk lv_]) ls)
+            :else (recur alias-vector_ ss (conj ls [lk lv_]))))
+         (empty? large-values)
+         alias-vector
+         (empty? ls)
+         (vec (concat alias-vector (repeat (- bin-count (count alias-vector)) {:just lk})))
+         :else
+         (let [lv_ (- lv bin-size)
+               alias-vector_ (conj alias-vector {:just lk})]
+           (cond
+            (zero? lv_) (recur alias-vector_ ss ls)
+            (< lv_ bin-size) (recur alias-vector_ (conj ss [lk lv_]) ls)
+            :else (recur alias-vector_ ss (conj ls [lk lv_]))))))))
+
 (defn- weighted-with-replacement [coll weigh rnd]
-  (let [sm (->> (reductions (fn [[tw pv] v]
-                              (let [w (weigh v)]
-                                (if (zero? w)
-                                  [tw pv]
-                                  [(+ tw w) v])))
-                            [0]
-                            coll)
-                (next)
-                (into (sorted-map)))
-        total (first (last sm))]
+  (let [alias-vector (make-alias-vector coll weigh)
+        bins (count alias-vector)]
     (repeatedly
-     #(second (first (subseq sm > (random/next-double! rnd total)))))))
+     #(let [x (random/next-double! rnd bins)
+            n (Math/floor x)
+            v (nth alias-vector n)]
+        (if-let [k (:just v)]
+          k
+          (let [{p :pivot sk :left lk :right} v]
+            (if (< (- x n) p)
+              sk
+              lk)))))))
 
 (defn sample
   "Returns a lazy sequence of samples from the collection.  The
